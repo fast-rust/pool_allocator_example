@@ -12,14 +12,28 @@ union Chunk<const SIZE : usize> {
     mem: [u8; SIZE],
 }
 
-// Grab another 4096 elements (we could use mmap for this).
+// Grab another N elements (we could use mmap for this).
 unsafe fn init_pool<const SIZE : usize>(
     pool: &mut *mut Chunk<SIZE>
 ) {
+    const N : usize = 4096;
     let mem = System.alloc(
         Layout::from_size_align(
-            SIZE * 4096, 32).unwrap());
-    *pool = mem as * mut Chunk<SIZE>;
+            SIZE * 4096, 32).unwrap()
+    ) as * mut Chunk<SIZE>;
+    for i in 0..N {
+        let chunk_ref = mem
+            .offset(i as isize)
+            .as_mut().unwrap();
+        let free_ptr = mem
+            .offset(i as isize + 1);
+        chunk_ref.free_ptr = if i == N-1 {
+            std::ptr::null_mut()
+        } else {
+            free_ptr
+        };
+    }
+    *pool = mem;
 }
 
 // Thread local variable, so not atomics needed.
@@ -34,11 +48,12 @@ unsafe impl<'a> GlobalAlloc for PoolAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if ENABLE && layout.size() <= 32
                 && layout.align() <= 32 {
-            eprintln!("alloc {layout:?}");
             if POOL32.is_null() {
                 init_pool(&mut POOL32);
             }
             let res = POOL32 as * mut u8;
+            POOL32 = POOL32.as_mut().unwrap().free_ptr;
+            // eprintln!("alloc {layout:?} @ {res:?}");
             res
         } else {
             System.alloc(layout)
@@ -49,7 +64,7 @@ unsafe impl<'a> GlobalAlloc for PoolAllocator {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ENABLE && layout.size() <= 32
                 && layout.align() <= 32 && !ptr.is_null() {
-            eprintln!("dealloc {layout:?}");
+            // eprintln!("dealloc {layout:?} @ {ptr:?}");
             let chunk = ptr as * mut Chunk<32>;
             let chunk_ref = chunk.as_mut().unwrap();
             chunk_ref.free_ptr = POOL32;
@@ -64,10 +79,37 @@ unsafe impl<'a> GlobalAlloc for PoolAllocator {
 static GLOBAL: PoolAllocator = PoolAllocator;
 
 #[test]
-fn test_me() {
+fn test_pool() {
     unsafe { ENABLE = true; }
-    {
-        let s = vec![1, 2, 3];
+    let _ = Box::new(1);
+    for _ in 0..10 {
+        let mut time = [0; 10];
+        let _ = vec![0; 1000000];
+        for i in 0..10 {
+            let t0 = std::time::Instant::now();
+            let _ = vec![1, 2, 3];
+            let _ = vec![1, 2, 3];
+            let _ = vec![1, 2, 3];
+            time[i] = t0.elapsed().as_nanos();
+        }
+        unsafe { ENABLE =false; }
+        println!("pool: {time:?}");
     }
-    unsafe { ENABLE =false; }
+}
+
+#[test]
+fn test_malloc() {
+    let _ = Box::new(1);
+    for _ in 0..10 {
+        let mut time = [0; 10];
+        let _ = vec![0; 1000000];
+        for i in 0..10 {
+            let t0 = std::time::Instant::now();
+            let _ = vec![1, 2, 3];
+            let _ = vec![1, 2, 3];
+            let _ = vec![1, 2, 3];
+            time[i] = t0.elapsed().as_nanos();
+        }
+        println!("malloc: {time:?}");
+    }
 }
