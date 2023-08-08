@@ -1,80 +1,73 @@
-#![feature(allocator_api)]
-/// Note that this is not Send or Sync!
-pub struct PoolAllocator<const SIZE : usize> {
-    next_free: std::cell::UnsafeCell<* mut u8>,
+#![feature(thread_local)]
+
+use std::alloc::{GlobalAlloc, Layout, System};
+
+struct PoolAllocator;
+
+// A chunk is either a pointer to the next free chunk
+// or some bytes.
+#[repr(C)]
+union Chunk<const SIZE : usize> {
+    free_ptr: * mut Chunk<SIZE>,
+    mem: [u8; SIZE],
 }
 
-impl<const SIZE : usize> PoolAllocator<SIZE> {
-    pub fn new(n: usize, align: usize) -> Self {
-        unsafe {
-            assert!(SIZE % align == 0);
-            assert!(SIZE >= std::mem::size_of::<* mut u8>());
-            let layout = std::alloc::Layout::from_size_align(
-                SIZE * n, align).unwrap();
-            let mem = std::alloc::alloc(layout);
-            if mem.is_null() { panic!("out of memory") }
+// Grab another 4096 elements (we could use mmap for this).
+unsafe fn init_pool<const SIZE : usize>(
+    pool: &mut *mut Chunk<SIZE>
+) {
+    let mem = System.alloc(
+        Layout::from_size_align(
+            SIZE * 4096, 32).unwrap());
+    *pool = mem as * mut Chunk<SIZE>;
+}
 
-            // put in the links.
-            for i in 0..n {
-                let ptr = mem.offset((i * SIZE) as isize);
-                *(ptr as * mut * mut u8) = if i != n-1 {
-                    ptr.offset(SIZE as isize)
-                } else {
-                    std::ptr::null_mut()
-                };
+// Thread local variable, so not atomics needed.
+// Although you may be tempted, never ever use Ordering::Relaxed
+// to guard a memory allocation.
+#[thread_local]
+static mut POOL32: * mut Chunk<32> = std::ptr::null_mut();
+static mut ENABLE : bool = false;
+
+unsafe impl<'a> GlobalAlloc for PoolAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if ENABLE && layout.size() <= 32
+                && layout.align() <= 32 {
+            eprintln!("alloc {layout:?}");
+            if POOL32.is_null() {
+                init_pool(&mut POOL32);
             }
-            Self {
-                next_free: std::cell::UnsafeCell::new(mem)
-            }
+            let res = POOL32 as * mut u8;
+            res
+        } else {
+            System.alloc(layout)
+        }
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if ENABLE && layout.size() <= 32
+                && layout.align() <= 32 && !ptr.is_null() {
+            eprintln!("dealloc {layout:?}");
+            let chunk = ptr as * mut Chunk<32>;
+            let chunk_ref = chunk.as_mut().unwrap();
+            chunk_ref.free_ptr = POOL32;
+            POOL32 = chunk;
+        } else {
+            System.dealloc(ptr, layout);
         }
     }
 }
 
-unsafe impl<const SIZE : usize> std::alloc::Allocator for PoolAllocator<SIZE> {
-    fn allocate(&self, layout: std::alloc::Layout) -> Result<std::ptr::NonNull<[u8]>, std::alloc::AllocError> {
-        unsafe {
-            let next_free_ptr = self.next_free.get();
-            let next_free = *next_free_ptr;
-            if !next_free.is_null() && layout.size() == SIZE {
-                let slice = std::slice::from_raw_parts_mut(next_free, SIZE);
-                let next = *(next_free as * mut * mut u8);
-                *next_free_ptr = next;
-                Ok(std::ptr::NonNull::new(slice as * mut [u8]).unwrap())
-            } else {
-                Err(std::alloc::AllocError)
-            }
-        }
+#[global_allocator]
+static GLOBAL: PoolAllocator = PoolAllocator;
+
+#[test]
+fn test_me() {
+    unsafe { ENABLE = true; }
+    {
+        let s = vec![1, 2, 3];
     }
-
-    unsafe fn deallocate(&self, ptr: std::ptr::NonNull<u8>, layout: std::alloc::Layout) {
-        // TODO:
-        println!("free {:?}", ptr);
-    }
-}
-
-#[cfg(test)]
-mod test {
-
-    #[test]
-    fn test_pool_allocator() {
-        use crate::PoolAllocator;
-
-        let pool = PoolAllocator::<8>::new(4, 8);
-
-        let b = Box::new_in(1_u64, &pool);
-        println!("{:016x}", *b);
-
-        let b = Box::new_in(1_u64, &pool);
-        println!("{:016x}", *b);
-
-        let b = Box::new_in(1_u64, &pool);
-        println!("{:016x}", *b);
-
-        let b = Box::new_in(1_u64, &pool);
-        println!("{:016x}", *b);
-
-        // This will fail.
-        // let b = Box::new_in(1_u64, &pool);
-        // println!("{:016x}", *b);
-    }
+    unsafe { ENABLE =false; }
 }
