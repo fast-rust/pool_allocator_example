@@ -37,6 +37,7 @@ unsafe fn init_pool<const SIZE : usize>(
 }
 
 // Thread local variable, so not atomics needed.
+//
 // Although you may be tempted, never ever use Ordering::Relaxed
 // to guard a memory allocation.
 #[thread_local]
