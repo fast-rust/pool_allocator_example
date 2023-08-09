@@ -56,7 +56,7 @@ unsafe impl<'a> GlobalAlloc for PoolAllocator {
             }
             let res = POOL32 as * mut u8;
             POOL32 = POOL32.as_mut().unwrap().free_ptr;
-            // eprintln!("alloc {layout:?} @ {res:?}");
+            eprintln!("alloc {layout:?} @ {res:?}");
             res
         } else {
             System.alloc(layout)
@@ -67,7 +67,7 @@ unsafe impl<'a> GlobalAlloc for PoolAllocator {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if ENABLE && layout.size() <= 32
                 && layout.align() <= 32 && !ptr.is_null() {
-            // eprintln!("dealloc {layout:?} @ {ptr:?}");
+            eprintln!("dealloc {layout:?} @ {ptr:?}");
             let chunk = ptr as * mut Chunk<32>;
             let chunk_ref = chunk.as_mut().unwrap();
             chunk_ref.free_ptr = POOL32;
@@ -80,6 +80,24 @@ unsafe impl<'a> GlobalAlloc for PoolAllocator {
 
 #[global_allocator]
 static GLOBAL: PoolAllocator = PoolAllocator;
+
+#[test]
+fn test_fred() {
+    unsafe { ENABLE = true; }
+    {
+        let d = Box::new(1);
+        let a = Box::new(1);
+        drop(a);
+        let a = Box::new(1);
+        let b = Box::new(1);
+        drop(a);
+        drop(b);
+        let a = Box::new(1);
+        drop(a);
+        drop(d);
+    }
+    unsafe { ENABLE =false; }
+}
 
 #[test]
 fn test_pool() {
