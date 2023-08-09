@@ -36,12 +36,14 @@ unsafe fn init_pool<const SIZE : usize>(
     *pool = mem;
 }
 
-// Thread local variable, so not atomics needed.
+// Thread local variable, so no atomics needed.
 //
 // Although you may be tempted, never ever use Ordering::Relaxed
 // to guard a memory allocation.
 #[thread_local]
 static mut POOL32: * mut Chunk<32> = std::ptr::null_mut();
+
+#[thread_local]
 static mut ENABLE : bool = false;
 
 unsafe impl<'a> GlobalAlloc for PoolAllocator {
@@ -93,9 +95,9 @@ fn test_pool() {
             let _ = vec![1, 2, 3];
             time[i] = t0.elapsed().as_nanos();
         }
-        unsafe { ENABLE =false; }
         println!("pool: {time:?}");
     }
+    unsafe { ENABLE =false; }
 }
 
 #[test]
